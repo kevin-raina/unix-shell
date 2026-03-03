@@ -9,17 +9,15 @@
 #define SH_TOK_DELIM " \t\r\n\a"
 #define MAX_JOBS 64
 
-/*
-  Function Declarations for builtin shell commands:
- */
+//  function declarations for builtin shell commands
+
 int sh_cd(char **args);
 int sh_help(char **args);
 int sh_exit(char **args);
 int sh_jobs(char **args);
 
-/*
-  List of builtin commands, followed by their corresponding functions.
- */
+//  list of builtin commands, followed by their corresponding functions
+
 char *builtin_str[] = {"cd", "help", "exit", "jobs"};
 
 int (*builtin_func[])(char **) = {&sh_cd, &sh_help, &sh_exit, &sh_jobs};
@@ -34,9 +32,8 @@ typedef struct {
 Job job_table[MAX_JOBS];
 int job_count = 0;
 
-/*
-  Builtin function implementations.
-*/
+//  builtin function implementations
+
 int sh_cd(char **args) {
   if (args[1] == NULL) {
     fprintf(stderr, "sh: expected argument to \"cd\"\n");
@@ -83,17 +80,17 @@ char *sh_read_line(void) {
   char *buffer = malloc(sizeof(char) * bufsize);
   int c;
 
-  // If memory allocation fails
+  // if memory allocation fails
   if (!buffer) {
     fprintf(stderr, "sh: allocation error\n");
     exit(EXIT_FAILURE);
   }
 
   while (1) {
-    // Read a charcter
+    // read a charcter
     c = getchar();
 
-    // If we hit EOF, replace it with a null character and return.
+    // if we hit EOF, replace it with a null character and return
     if (c == EOF || c == '\n') {
       buffer[position] = '\0';
       return buffer;
@@ -102,7 +99,7 @@ char *sh_read_line(void) {
     }
     position++;
 
-    // If we have exceeded the buffer, rellocate.
+    // if we have exceeded the buffer, rellocate
     if (position >= bufsize) {
       bufsize += SH_RL_BUFSIZE;
       buffer = realloc(buffer, bufsize);
@@ -162,23 +159,28 @@ int sh_launch(char **args) {
 
   pid = fork();
   if (pid == 0) {
-    // Child process
+    // child process
+    // restore default behavior
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);
+
     if (execvp(args[0], args) == -1) {
       perror("sh");
     }
     exit(EXIT_FAILURE);
   } else if (pid < 0) {
-    // Error forking
+    // error forking
     perror("sh");
   } else {
-    // Parent process
+    // parent process
     if (background == 0) {
-      // Foreground: Wait for child to finish
+      // foreground: Wait for child to finish
+      waitpid(pid, &status, WUNTRACED);
       do {
         waitpid(pid, &status, WUNTRACED);
       } while (!WIFEXITED(status) && !WIFSIGNALED(status));
     } else {
-      // Background: Do not wait, print pid and return
+      // background: Do not wait, print pid and return
       job_table[job_count].pid = pid;
       strncpy(job_table[job_count].command, args[0], 255);
       job_count++;
@@ -190,7 +192,7 @@ int sh_launch(char **args) {
 
 int sh_execute(char **args) {
   if (args[0] == NULL) {
-    // An empty command was entered
+    // an empty command was entered
     return 1;
   }
 
@@ -225,12 +227,16 @@ int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
 
-  // Load config files, if any.
+  // ignore signals before fork
+  signal(SIGINT, SIG_IGN);
+  signal(SIGTSTP, SIG_IGN);
 
-  // Run command loop.
+  // load config files, if any
+
+  // run command loop.
   sh_loop();
 
-  // Perform any shutdown/cleanup.
+  // perform any shutdown/cleanup
 
   return EXIT_SUCCESS;
 }
