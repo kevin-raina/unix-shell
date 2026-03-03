@@ -15,13 +15,14 @@
 int sh_cd(char **args);
 int sh_help(char **args);
 int sh_exit(char **args);
+int sh_jobs(char **args);
 
 /*
   List of builtin commands, followed by their corresponding functions.
  */
-char *builtin_str[] = {"cd", "help", "exit"};
+char *builtin_str[] = {"cd", "help", "exit", "jobs"};
 
-int (*builtin_func[])(char **) = {&sh_cd, &sh_help, &sh_exit};
+int (*builtin_func[])(char **) = {&sh_cd, &sh_help, &sh_exit, &sh_jobs};
 
 int sh_num_builtins() { return sizeof(builtin_str) / sizeof(char *); }
 
@@ -66,6 +67,14 @@ int sh_help(char **args) {
 int sh_exit(char **args) {
   (void)args;
   return 0;
+}
+
+int sh_jobs(char **args) {
+  (void)args;
+  for (int i = 0; i < job_count; i++) {
+    printf("[%d] %d %s\n", i + 1, job_table[i].pid, job_table[i].command);
+  }
+  return 1;
 }
 
 char *sh_read_line(void) {
