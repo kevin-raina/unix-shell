@@ -7,6 +7,7 @@
 #define SH_RL_BUFSIZE 1024
 #define SH_TOK_BUFSIZE 64
 #define SH_TOK_DELIM " \t\r\n\a"
+#define MAX_JOBS 64
 
 /*
   Function Declarations for builtin shell commands:
@@ -23,6 +24,14 @@ char *builtin_str[] = {"cd", "help", "exit"};
 int (*builtin_func[])(char **) = {&sh_cd, &sh_help, &sh_exit};
 
 int sh_num_builtins() { return sizeof(builtin_str) / sizeof(char *); }
+
+typedef struct {
+  pid_t pid;
+  char command[256];
+} Job;
+
+Job job_table[MAX_JOBS];
+int job_count = 0;
 
 /*
   Builtin function implementations.
@@ -42,7 +51,7 @@ int sh_help(char **args) {
   (void)args;
 
   int i;
-  printf("SH\n");
+  printf("UNIX-Shell\n");
   printf("Type program names and arguments, and hit enter.\n");
   printf("The following are built in:\n");
 
@@ -161,7 +170,10 @@ int sh_launch(char **args) {
       } while (!WIFEXITED(status) && !WIFSIGNALED(status));
     } else {
       // Background: Do not wait, print pid and return
-      printf("[bg] %d\n", pid);
+      job_table[job_count].pid = pid;
+      strncpy(job_table[job_count].command, args[0], 255);
+      job_count++;
+      printf("[%d] %d\n", job_count, pid);
     }
   }
   return 1;
@@ -203,6 +215,7 @@ void sh_loop(void) {
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
+
   // Load config files, if any.
 
   // Run command loop.
