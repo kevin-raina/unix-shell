@@ -9,6 +9,8 @@
 #define SH_TOK_DELIM " \t\r\n\a"
 #define MAX_JOBS 64
 
+pid_t shell_pgid;
+
 //  function declarations for builtin shell commands
 
 int sh_cd(char **args);
@@ -91,10 +93,24 @@ char *sh_read_line(void) {
     c = getchar();
 
     // if we hit EOF, replace it with a null character and return
-    if (c == EOF || c == '\n') {
+    if (c == '\n') {
       buffer[position] = '\0';
       return buffer;
-    } else {
+    }
+
+    else if (c == EOF) {
+      if (feof(stdin)) {
+        // Ctrl+D, real end of file, exit
+        exit(EXIT_SUCCESS);
+      } else {
+        // Ctrl+C interrupted getchar(), reset and continue
+        clearerr(stdin);
+        buffer[position] = '\0';
+        return buffer;
+      }
+    }
+
+    else {
       buffer[position] = c;
     }
     position++;
@@ -157,6 +173,9 @@ void sigchld_handler(int sig) {
 }
 
 int sh_launch(char **args) {
+  // ignore SIGTTOU signal
+  signal(SIGTTOU, SIG_IGN);
+
   pid_t pid;
   int status;
 
@@ -176,6 +195,8 @@ int sh_launch(char **args) {
   pid = fork();
   if (pid == 0) {
     // child process
+    // child becomes its own process group
+    setpgid(0, 0);
     // restore default behavior
     signal(SIGINT, SIG_DFL);
     signal(SIGTSTP, SIG_DFL);
@@ -188,13 +209,23 @@ int sh_launch(char **args) {
     // error forking
     perror("sh");
   } else {
+    // parent also set's child's group to avoid race conditions
+    setpgid(pid, pid);
     // parent process
     if (background == 0) {
       // foreground: Wait for child to finish
+      // give terminal to child
+      tcsetpgrp(STDIN_FILENO, pid);
+
       do {
         waitpid(pid, &status, WUNTRACED);
       } while (!WIFEXITED(status) && !WIFSIGNALED(status));
-    } else {
+
+      // take terminal back
+      tcsetpgrp(STDIN_FILENO, shell_pgid);
+    }
+
+    else {
       // background: Do not wait, print pid and return
       job_table[job_count].pid = pid;
       strncpy(job_table[job_count].command, args[0], 255);
@@ -241,6 +272,22 @@ void sh_loop(void) {
 int main(int argc, char **argv) {
   (void)argc;
   (void)argv;
+
+  // ignore SIGTTOU signal
+  signal(SIGTTOU, SIG_IGN);
+  // save process id
+  pid_t sh_pid = getpid();
+
+  // put the shell in it's own process group
+  setpgid(sh_pid, sh_pid);
+
+  // save process group id
+  shell_pgid = sh_pid;
+
+  // take ownership of terminal if we are in foreground
+  if (tcgetpgrp(STDIN_FILENO) == getppid()) {
+    tcsetpgrp(STDIN_FILENO, shell_pgid);
+  }
 
   // ignore signals before fork
   signal(SIGINT, SIG_IGN);
