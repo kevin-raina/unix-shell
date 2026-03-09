@@ -9,26 +9,33 @@
 #define SH_TOK_DELIM " \t\r\n\a"
 #define MAX_JOBS 64
 
-pid_t shell_pgid;
-
 //  function declarations for builtin shell commands
-
 int sh_cd(char **args);
 int sh_help(char **args);
 int sh_exit(char **args);
 int sh_jobs(char **args);
+int sh_fg(char **args);
+int sh_bg(char **args);
 
 //  list of builtin commands, followed by their corresponding functions
-
-char *builtin_str[] = {"cd", "help", "exit", "jobs"};
-
-int (*builtin_func[])(char **) = {&sh_cd, &sh_help, &sh_exit, &sh_jobs};
+char *builtin_str[] = {"cd", "help", "exit", "jobs", "fg", "bg"};
+int (*builtin_func[])(char **) = {&sh_cd,   &sh_help, &sh_exit,
+                                  &sh_jobs, &sh_fg,   &sh_bg};
 
 int sh_num_builtins() { return sizeof(builtin_str) / sizeof(char *); }
+
+pid_t shell_pgid;
+
+typedef enum {
+  RUNNING,
+  STOPPED,
+  DONE,
+} JobStatus;
 
 typedef struct {
   pid_t pid;
   char command[256];
+  JobStatus status;
 } Job;
 
 Job job_table[MAX_JOBS];
@@ -71,8 +78,76 @@ int sh_exit(char **args) {
 int sh_jobs(char **args) {
   (void)args;
   for (int i = 0; i < job_count; i++) {
-    printf("[%d] %d %s\n", i + 1, job_table[i].pid, job_table[i].command);
+    char *status_str = job_table[i].status == RUNNING ? "Running" : "Stopped";
+    printf("[%d] %s %d %s\n", i + 1, status_str, job_table[i].pid,
+           job_table[i].command);
   }
+  return 1;
+}
+
+int sh_fg(char **args) {
+  int status;
+  if (args[1] == NULL) {
+    fprintf(stderr, "sh: fg: expected job number\n");
+    return 1;
+  }
+
+  int job_index = atoi(args[1]) - 1;
+  if (job_index < 0 || job_index >= job_count) {
+    fprintf(stderr, "sh: fg: no such job");
+    return 1;
+  }
+
+  pid_t job_pid = job_table[job_index].pid;
+
+  // negative pid sends signal to entire process group
+  kill(-job_pid, SIGCONT);
+
+  // give terminal to job so it can receive keyboard input
+  tcsetpgrp(STDIN_FILENO, job_table[job_index].pid);
+
+  do {
+    waitpid(job_pid, &status, WUNTRACED);
+  } while (!WIFEXITED(status) && !WIFSIGNALED(status) && !WIFSTOPPED(status));
+
+  if (WIFEXITED(status) || WIFSIGNALED(status)) {
+    // job finished, remove from table;
+    job_table[job_index] = job_table[job_count - 1];
+    job_count--;
+  }
+
+  if (WIFSTOPPED(status)) {
+    job_table[job_index].status = STOPPED;
+    printf("\n[%d] suspended %s\n", job_index + 1,
+           job_table[job_index].command);
+  }
+
+  tcsetpgrp(STDIN_FILENO, shell_pgid);
+
+  return 1;
+}
+
+int sh_bg(char **args) {
+  if (args[1] == NULL) {
+    fprintf(stderr, "sh: bg: expected job number\n");
+    return 1;
+  }
+
+  int job_index = atoi(args[1]) - 1;
+  if (job_index < 0 || job_index >= job_count) {
+    fprintf(stderr, "sh: bg: no such job");
+    return 1;
+  }
+
+  pid_t job_pid = job_table[job_index].pid;
+
+  kill(-job_pid, SIGCONT);
+
+  job_table[job_index].status = RUNNING;
+
+  printf("[%d] %d continued %s\n", job_index + 1, job_pid,
+         job_table[job_index].command);
+
   return 1;
 }
 
@@ -172,6 +247,16 @@ void sigchld_handler(int sig) {
   }
 }
 
+void store_command(char **args) {
+  // store full command string
+  job_table[job_count].command[0] = '\0';
+  for (int i = 0; args[i] != NULL; i++) {
+    strncat(job_table[job_count].command, args[i], 255);
+    if (args[i + 1] != NULL)
+      strncat(job_table[job_count].command, " ", 255);
+  }
+}
+
 int sh_launch(char **args) {
   // ignore SIGTTOU signal
   signal(SIGTTOU, SIG_IGN);
@@ -219,7 +304,18 @@ int sh_launch(char **args) {
 
       do {
         waitpid(pid, &status, WUNTRACED);
-      } while (!WIFEXITED(status) && !WIFSIGNALED(status));
+      } while (!WIFEXITED(status) && !WIFSIGNALED(status) &&
+               !WIFSTOPPED(status));
+
+      if (WIFSTOPPED(status)) {
+        // job was stopped with Ctrl+Z
+        job_table[job_count].pid = pid;
+        // store full command string
+        store_command(args);
+        job_table[job_count].status = STOPPED;
+        job_count++;
+        printf("[%d] %d suspended %s\n", job_count, pid, args[0]);
+      }
 
       // take terminal back
       tcsetpgrp(STDIN_FILENO, shell_pgid);
@@ -228,7 +324,8 @@ int sh_launch(char **args) {
     else {
       // background: Do not wait, print pid and return
       job_table[job_count].pid = pid;
-      strncpy(job_table[job_count].command, args[0], 255);
+      store_command(args);
+      job_table[job_count].status = RUNNING;
       job_count++;
       printf("[%d] %d\n", job_count, pid);
     }
@@ -275,6 +372,7 @@ int main(int argc, char **argv) {
 
   // ignore SIGTTOU signal
   signal(SIGTTOU, SIG_IGN);
+
   // save process id
   pid_t sh_pid = getpid();
 
