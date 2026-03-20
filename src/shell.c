@@ -1,5 +1,6 @@
 #include "../include/parser.h"
 
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -58,54 +59,44 @@ char *sh_read_line(void) {
   }
 }
 
-char **sh_split_line(char *line) {
-  int bufsize = SH_TOK_BUFSIZE, position = 0;
-  char **tokens = malloc(bufsize * sizeof(char *));
-  char *token;
-
-  if (!tokens) {
-    fprintf(stderr, "sh:allocation error\n");
-    exit(EXIT_FAILURE);
-  }
-
-  token = strtok(line, SH_TOK_DELIM);
-  while (token != NULL) {
-    tokens[position] = token;
-    position++;
-
-    if (position >= bufsize) {
-      bufsize += SH_TOK_BUFSIZE;
-      tokens = realloc(tokens, bufsize * sizeof(char *));
-      if (!tokens) {
-        fprintf(stderr, "sh:allocation error\n");
-        exit(EXIT_FAILURE);
-      }
+void sh_apply_redirections(Command command) {
+  if (command.redirect_in != NULL) {
+    int fd = open(command.redirect_in, O_RDONLY);
+    if (fd == -1) {
+      perror("open");
+      exit(EXIT_FAILURE);
     }
-    token = strtok(NULL, SH_TOK_DELIM);
+    dup2(fd, STDIN_FILENO);
+    close(fd);
   }
-  tokens[position] = NULL;
-  return tokens;
+
+  if (command.redirect_out != NULL) {
+    int fd = open(command.redirect_out, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+      perror("open");
+      exit(EXIT_FAILURE);
+    }
+    dup2(fd, STDOUT_FILENO);
+    close(fd);
+  }
+
+  if (command.append != NULL) {
+    int fd = open(command.append, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd == -1) {
+      perror("open");
+      exit(EXIT_FAILURE);
+    }
+    dup2(fd, STDOUT_FILENO);
+    close(fd);
+  }
 }
 
-int sh_launch(char **args) {
+int sh_launch(Command command) {
   // ignore SIGTTOU signal
   signal(SIGTTOU, SIG_IGN);
 
   pid_t pid;
   int status;
-
-  int last = 0;
-  while (args[last + 1] != NULL)
-    last++;
-
-  int background = 0;
-
-  if (strcmp(args[last], "&") == 0) {
-    background = 1;
-    args[last] = NULL;
-  } else {
-    background = 0;
-  }
 
   pid = fork();
   if (pid == 0) {
@@ -116,7 +107,9 @@ int sh_launch(char **args) {
     signal(SIGINT, SIG_DFL);
     signal(SIGTSTP, SIG_DFL);
 
-    if (execvp(args[0], args) == -1) {
+    sh_apply_redirections(command);
+
+    if (execvp(command.args[0], command.args) == -1) {
       perror("sh");
     }
     exit(EXIT_FAILURE);
@@ -127,7 +120,7 @@ int sh_launch(char **args) {
     // parent also set's child's group to avoid race conditions
     setpgid(pid, pid);
     // parent process
-    if (background == 0) {
+    if (command.background == 0) {
       // foreground: Wait for child to finish
       // give terminal to child
       tcsetpgrp(STDIN_FILENO, pid);
@@ -141,10 +134,10 @@ int sh_launch(char **args) {
         // job was stopped with Ctrl+Z
         job_table[job_count].pid = pid;
         // store full command string
-        store_command(args);
+        store_command(command.args);
         job_table[job_count].status = STOPPED;
         job_count++;
-        printf("[%d] %d suspended %s\n", job_count, pid, args[0]);
+        printf("[%d] %d suspended %s\n", job_count, pid, command.args[0]);
       }
 
       // take terminal back
@@ -154,7 +147,7 @@ int sh_launch(char **args) {
     else {
       // background: Do not wait, print pid and return
       job_table[job_count].pid = pid;
-      store_command(args);
+      store_command(command.args);
       job_table[job_count].status = RUNNING;
       job_count++;
       printf("[%d] %d\n", job_count, pid);
@@ -163,23 +156,22 @@ int sh_launch(char **args) {
   return 1;
 }
 
-int sh_execute(char **args) {
-  if (args[0] == NULL) {
+int sh_execute(Command command) {
+  if (command.args[0] == NULL) {
     // an empty command was entered
     return 1;
   }
 
   for (int i = 0; i < sh_num_builtins(); i++) {
-    if (strcmp(args[0], builtin_str[i]) == 0) {
-      return (*builtin_func[i])(args);
+    if (strcmp(command.args[0], builtin_str[i]) == 0) {
+      return (*builtin_func[i])(command.args);
     }
   }
-  return sh_launch(args);
+  return sh_launch(command);
 }
 
 void sh_loop(void) {
   char *line;
-  char **args;
   int status;
 
   do {
@@ -190,10 +182,8 @@ void sh_loop(void) {
     line = sh_read_line();
     Token *tokens = sh_tokenize(line);
     Command cmd = sh_parse(tokens);
-    args = sh_split_line(line);
-    status = sh_execute(args);
+    status = sh_execute(cmd);
 
     free(line);
-    free(args);
   } while (status);
 }
